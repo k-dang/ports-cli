@@ -8,6 +8,7 @@ import {
   log,
   multiselect,
   outro,
+  spinner,
 } from "@clack/prompts";
 
 export type RawPortEntry = {
@@ -275,17 +276,28 @@ async function detectUnixPorts(): Promise<RawPortEntry[]> {
 async function detectWindowsPorts(): Promise<RawPortEntry[]> {
   const script = `
 $ErrorActionPreference = 'SilentlyContinue'
-Get-NetTCPConnection -State Listen |
+$connections = @(Get-NetTCPConnection -State Listen)
+$owningPids = @($connections | ForEach-Object { $_.OwningProcess } | Sort-Object -Unique)
+
+$processes = @{}
+Get-Process -Id $owningPids | ForEach-Object { $processes[[int]$_.Id] = $_ }
+
+$commandLines = @{}
+if ($owningPids.Count -gt 0) {
+  $filter = ($owningPids | ForEach-Object { "ProcessId = $_" }) -join ' OR '
+  Get-CimInstance Win32_Process -Filter $filter | ForEach-Object { $commandLines[[int]$_.ProcessId] = $_.CommandLine }
+}
+
+$connections |
   ForEach-Object {
-    $process = Get-Process -Id $_.OwningProcess
-    $commandLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.OwningProcess)").CommandLine
+    $process = $processes[[int]$_.OwningProcess]
     [pscustomobject]@{
       LocalAddress = $_.LocalAddress
       LocalPort = $_.LocalPort
       OwningProcess = $_.OwningProcess
       ProcessName = $process.ProcessName
       Path = $process.Path
-      CommandLine = $commandLine
+      CommandLine = $commandLines[[int]$_.OwningProcess]
     }
   } |
   ConvertTo-Json -Compress
@@ -315,7 +327,9 @@ async function hydrateUnixCommands(entries: RawPortEntry[]): Promise<void> {
 }
 
 async function detectPorts(): Promise<PortEntry[]> {
-  return mergePortEntries(await detectRawPorts());
+  return mergePortEntries(await detectRawPorts()).filter(
+    (entry) => entry.disabledReason !== "requires elevated permissions",
+  );
 }
 
 async function terminatePid(pid: number, force: boolean): Promise<boolean> {
@@ -344,7 +358,11 @@ function printDetectedPorts(entries: PortEntry[]): void {
 async function runCli(): Promise<void> {
   intro("ports");
 
+  const scan = spinner();
+  scan.start("Scanning localhost ports");
   const ports = await detectPorts();
+  scan.stop(`Found ${ports.length} open localhost port${ports.length === 1 ? "" : "s"}`);
+
   if (ports.length === 0) {
     outro("No open localhost dev ports found.");
     return;
@@ -353,7 +371,7 @@ async function runCli(): Promise<void> {
   const closable = ports.filter((entry) => entry.canClose);
   if (closable.length === 0) {
     printDetectedPorts(ports);
-    outro("Open ports found, but none can be closed without elevated permissions.");
+    outro("Open ports found, but none can be closed.");
     return;
   }
 
