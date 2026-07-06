@@ -5,12 +5,12 @@ Interactive CLI for finding common open localhost dev ports and closing the proc
 ## Install (npx / bunx, no install step)
 
 ```bash
-npx @k-dang/ports-cli
-# or
 bunx @k-dang/ports-cli
+# or
+npx --package=@k-dang/ports-cli ports
 ```
 
-The published package is a plain Node-compatible bundle, so this works whether or not you have Bun installed.
+The published package is a plain Node-compatible bundle, so this works whether or not you have Bun installed. On Windows, bare `npx @k-dang/ports-cli` fails with `'ports' is not recognized` — this is a bug in npx's implicit bin-resolution path, not specific to this package; the `--package=` form above works around it (and works everywhere else too).
 
 ## Development
 
