@@ -1,15 +1,22 @@
 {
   "name": "ports-cli",
+  "version": "0.1.0",
   "module": "index.ts",
   "type": "module",
-  "private": true,
+  "description": "Interactive CLI for finding common open localhost dev ports and closing the processes that own them.",
+  "repository": "github:k-dang/ports-cli",
   "bin": {
-    "ports": "./index.ts"
+    "ports": "./dist/cli.js"
   },
+  "files": [
+    "dist/cli.js"
+  ],
   "scripts": {
     "start": "bun run index.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:npm": "bun build ./index.ts --target=node --outfile dist/cli.js",
+    "prepublishOnly": "bun run build:npm"
   },
   "devDependencies": {
     "@types/bun": "latest"

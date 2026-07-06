@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
 import {
   cancel,
@@ -10,6 +10,8 @@ import {
   outro,
   spinner,
 } from "@clack/prompts";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 export type RawPortEntry = {
   address: string;
@@ -56,8 +58,59 @@ const COMMON_PORT_LABELS = new Map<number, string>([
   [27017, "MongoDB service"],
 ]);
 
-export function labelPort(port: number): string {
-  return COMMON_PORT_LABELS.get(port) ?? "Unknown local service";
+export function labelEntry(entry: { port: number; command?: string }): string {
+  return COMMON_PORT_LABELS.get(entry.port) ?? describeCommand(entry.command) ?? "Unknown local service";
+}
+
+// Summarizes a command line as its first two non-flag arguments, e.g.
+// "node --inspect …\api\server.js" -> "server.js",
+// "node …\node_modules\next\dist\bin\next dev" -> "next dev".
+export function describeCommand(command: string | undefined): string | undefined {
+  if (!command) return undefined;
+
+  const words: string[] = [];
+  for (const part of splitCommandLine(command).slice(1)) {
+    if (part.startsWith("-")) continue;
+    words.push(shortenPathArg(part));
+    if (words.length === 2) break;
+  }
+
+  return words.length > 0 ? words.join(" ") : undefined;
+}
+
+function splitCommandLine(command: string): string[] {
+  return (command.trim().match(/"[^"]*"|\S+/g) ?? []).map((part) => part.replace(/^"|"$/g, ""));
+}
+
+// "…/node_modules/.bin/vite" -> "vite", "…/node_modules/@angular/cli/bin/ng" -> "@angular/cli",
+// any other path -> its basename. The leading greedy .* anchors to the LAST node_modules,
+// so pnpm's nested "node_modules/.pnpm/…/node_modules/pkg" resolves to "pkg". Prefixed with the
+// project directory (the folder right before the FIRST node_modules) so that two projects
+// running the same tool don't collapse to the same label.
+function shortenPathArg(arg: string): string {
+  const packageMatch = /.*node_modules[\\/](?:\.bin[\\/])?((?:@[^\\/]+[\\/])?[^\\/]+)/.exec(arg);
+  if (packageMatch) {
+    const pkg = packageMatch[1]!.replace(/\\/g, "/");
+    const projectDir = /^(.*?)[\\/]node_modules[\\/]/.exec(arg)?.[1];
+    const projectName = projectDir ? projectDir.split(/[\\/]/).filter(Boolean).at(-1) : undefined;
+    return projectName ? `${projectName}/${pkg}` : pkg;
+  }
+
+  const segments = arg.split(/[\\/]/).filter(Boolean);
+  return segments.length > 1 ? segments.slice(-2).join("/") : (segments.at(-1) ?? arg);
+}
+
+function truncate(text: string, maxLength: number): string {
+  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
+}
+
+// Matches runtime names with optional version suffixes, e.g. "python3.12", "ruby3.2".
+const DEV_RUNTIME_PATTERN = /^(node|bun|deno|python|py|ruby|php|java|dotnet)[\d.]*$/;
+
+export function isDevRuntimeEntry(entry: { processName?: string; command?: string }): boolean {
+  const name = entry.processName ?? commandName(entry.command);
+  if (!name) return false;
+  return DEV_RUNTIME_PATTERN.test(name.toLowerCase().replace(/\.exe$/, ""));
 }
 
 export function isLoopbackAddress(address: string): boolean {
@@ -68,6 +121,18 @@ export function isLoopbackAddress(address: string): boolean {
     normalized === "0:0:0:0:0:0:0:1" ||
     normalized.startsWith("127.") ||
     normalized.startsWith("::ffff:127.")
+  );
+}
+
+// Wildcard binds (how most dev servers listen) accept loopback connections too.
+export function isLocalListenerAddress(address: string): boolean {
+  const normalized = address.toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    normalized === "*" ||
+    normalized === "0.0.0.0" ||
+    normalized === "::" ||
+    normalized === "0:0:0:0:0:0:0:0" ||
+    isLoopbackAddress(address)
   );
 }
 
@@ -102,7 +167,7 @@ export function parseLsofOutput(output: string): RawPortEntry[] {
     if (!Number.isInteger(pid) || tcpIndex === -1) continue;
 
     const endpoint = parseEndpoint(parts[tcpIndex + 1] ?? "");
-    if (!endpoint || !isLoopbackAddress(endpoint.address)) continue;
+    if (!endpoint || !isLocalListenerAddress(endpoint.address)) continue;
 
     entries.push({
       address: endpoint.address,
@@ -127,7 +192,7 @@ export function parseSsOutput(output: string): RawPortEntry[] {
     if (parts[0] !== "LISTEN") continue;
 
     const endpoint = parseEndpoint(parts[3] ?? "");
-    if (!endpoint || !isLoopbackAddress(endpoint.address)) continue;
+    if (!endpoint || !isLocalListenerAddress(endpoint.address)) continue;
 
     const pidMatch = /pid=(\d+)/.exec(trimmed);
     const processMatch = /"([^"]+)"/.exec(trimmed);
@@ -157,7 +222,7 @@ export function parsePowerShellJson(output: string): RawPortEntry[] {
     const address = String(record.LocalAddress ?? "");
     const port = Number(record.LocalPort);
     const pid = Number(record.OwningProcess);
-    if (!Number.isInteger(port) || !isLoopbackAddress(address)) continue;
+    if (!Number.isInteger(port) || !isLocalListenerAddress(address)) continue;
 
     entries.push({
       address,
@@ -172,7 +237,7 @@ export function parsePowerShellJson(output: string): RawPortEntry[] {
 }
 
 export function mergePortEntries(rawEntries: RawPortEntry[]): PortEntry[] {
-  const merged = new Map<string, Omit<PortEntry, "canClose" | "disabledReason">>();
+  const merged = new Map<string, Omit<PortEntry, "label" | "canClose" | "disabledReason">>();
 
   for (const entry of rawEntries) {
     const key = entryKey(entry);
@@ -193,19 +258,18 @@ export function mergePortEntries(rawEntries: RawPortEntry[]): PortEntry[] {
       processName: entry.processName,
       command: entry.command,
       owner: entry.owner,
-      label: labelPort(entry.port),
     });
   }
 
   return Array.from(merged.values())
-    .map((entry) => ({ ...entry, ...closeability(entry) }))
+    .map((entry) => ({ ...entry, label: labelEntry(entry), ...closeability(entry) }))
     .sort((a, b) => a.port - b.port || (a.pid ?? 0) - (b.pid ?? 0));
 }
 
 export function formatPortOption(entry: PortEntry): string {
   const pid = entry.pid ? `pid ${entry.pid}` : "owner unavailable";
   const processName = entry.processName ?? commandName(entry.command) ?? "unknown";
-  return `${String(entry.port).padEnd(5)} ${entry.label.padEnd(22)} ${pid.padEnd(18)} ${processName}`.trimEnd();
+  return `${String(entry.port).padEnd(5)} ${truncate(entry.label, 22).padEnd(22)} ${pid.padEnd(18)} ${processName}`.trimEnd();
 }
 
 function entryKey(entry: { pid?: number; port: number }): string {
@@ -238,19 +302,29 @@ function stringValue(value: unknown): string | undefined {
 
 function commandName(command: string | undefined): string | undefined {
   if (!command) return undefined;
-  const first = command.trim().split(/\s+/)[0];
+  const first = splitCommandLine(command)[0];
   if (!first) return undefined;
   return first.split(/[\\/]/).at(-1);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function runCommand(command: string[]): Promise<CommandResult> {
+  const [file, ...args] = command;
   try {
-    const proc = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
+    const child = spawn(file!, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk));
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk));
+
+    const exitCode = await new Promise<number>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", (code) => resolve(code ?? 0));
+    });
+
     return { exitCode, stdout, stderr };
   } catch (error) {
     return { exitCode: 127, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
@@ -328,7 +402,7 @@ async function hydrateUnixCommands(entries: RawPortEntry[]): Promise<void> {
 
 async function detectPorts(): Promise<PortEntry[]> {
   return mergePortEntries(await detectRawPorts()).filter(
-    (entry) => entry.disabledReason !== "requires elevated permissions",
+    (entry) => isDevRuntimeEntry(entry) && entry.disabledReason !== "requires elevated permissions",
   );
 }
 
@@ -361,7 +435,7 @@ async function runCli(): Promise<void> {
   const scan = spinner();
   scan.start("Scanning localhost ports");
   const ports = await detectPorts();
-  scan.stop(`Found ${ports.length} open localhost port${ports.length === 1 ? "" : "s"}`);
+  scan.stop(`Found ${ports.length} open localhost dev port${ports.length === 1 ? "" : "s"}`);
 
   if (ports.length === 0) {
     outro("No open localhost dev ports found.");
@@ -378,12 +452,15 @@ async function runCli(): Promise<void> {
   const selected = await multiselect<PortEntry>({
     message: "Select ports to close",
     required: false,
-    options: ports.map((entry) => ({
-      value: entry,
-      label: formatPortOption(entry),
-      hint: entry.disabledReason,
-      disabled: !entry.canClose,
-    })),
+    options: ports.map((entry) => {
+      const commandSummary = describeCommand(entry.command);
+      return {
+        value: entry,
+        label: formatPortOption(entry),
+        hint: entry.disabledReason ?? (commandSummary && commandSummary !== entry.label ? commandSummary : undefined),
+        disabled: !entry.canClose,
+      };
+    }),
   });
 
   if (isCancel(selected)) {
@@ -398,7 +475,7 @@ async function runCli(): Promise<void> {
 
   const pids = uniquePids(selected);
   await Promise.all(pids.map((pid) => terminatePid(pid, false)));
-  await Bun.sleep(800);
+  await sleep(800);
 
   let remaining = remainingSelectedEntries(selected, await detectPorts());
   if (remaining.length > 0) {
@@ -410,7 +487,7 @@ async function runCli(): Promise<void> {
 
     if (!isCancel(force) && force) {
       await Promise.all(remainingPids.map((pid) => terminatePid(pid, true)));
-      await Bun.sleep(500);
+      await sleep(500);
       remaining = remainingSelectedEntries(selected, await detectPorts());
     }
   }
@@ -424,7 +501,9 @@ async function runCli(): Promise<void> {
   outro("Some selected ports could not be closed.");
 }
 
-if (import.meta.main) {
+const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
+
+if (isMainModule) {
   try {
     await runCli();
   } catch (error) {
