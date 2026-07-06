@@ -5,9 +5,9 @@ Interactive CLI for finding common open localhost dev ports and closing the proc
 ## Install (npx / bunx, no install step)
 
 ```bash
-npx ports-cli
+npx @k-dang/ports-cli
 # or
-bunx ports-cli
+bunx @k-dang/ports-cli
 ```
 
 The published package is a plain Node-compatible bundle, so this works whether or not you have Bun installed.
