@@ -1,12 +1,13 @@
 {
   "name": "@k-dang/ports-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "module": "index.ts",
   "type": "module",
   "description": "Interactive CLI for finding common open localhost dev ports and closing the processes that own them.",
   "repository": "github:k-dang/ports-cli",
   "bin": {
-    "ports": "./dist/cli.js"
+    "ports": "./dist/cli.js",
+    "ports-cli": "./dist/cli.js"
   },
   "files": [
     "dist/cli.js"
