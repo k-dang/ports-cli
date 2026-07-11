@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import {
   describeCommand,
+  disambiguate,
+  formatPortOption,
   isDevRuntimeEntry,
   isLocalListenerAddress,
   isLoopbackAddress,
@@ -9,7 +11,17 @@ import {
   parseLsofOutput,
   parsePowerShellJson,
   parseSsOutput,
+  resolveLabelColumns,
+  type PortEntry,
 } from "./index";
+
+function portEntry(overrides: Partial<PortEntry> & Pick<PortEntry, "port" | "label">): PortEntry {
+  return {
+    addresses: ["127.0.0.1"],
+    canClose: true,
+    ...overrides,
+  };
+}
 
 test("detects loopback addresses only", () => {
   expect(isLoopbackAddress("localhost")).toBe(true);
@@ -161,4 +173,97 @@ test("keeps the project directory so two projects don't share a label", () => {
     ),
   ).toBe("rental-property-management-app/next");
   expect(describeCommand("node C:\\dev\\project-a\\server.js")).not.toBe(describeCommand("node C:\\dev\\project-b\\server.js"));
+});
+
+test("middle-truncates long labels so the tool suffix stays visible", () => {
+  const base = "rental-property-management-app";
+  const entries = [
+    portEntry({ port: 3000, pid: 1, label: `${base}/next`, processName: "node" }),
+    portEntry({ port: 3001, pid: 2, label: `${base}/api`, processName: "node" }),
+    portEntry({ port: 3002, pid: 3, label: `${base}/web`, processName: "node" }),
+  ];
+
+  const { displayLabels, ambiguous } = resolveLabelColumns(entries);
+
+  expect(displayLabels).toHaveLength(3);
+  expect(new Set(displayLabels).size).toBe(3);
+  for (const column of displayLabels) {
+    expect(column.length).toBeLessThanOrEqual(22);
+  }
+  expect(ambiguous).toEqual([false, false, false]);
+  expect(displayLabels[0]).toContain("next");
+  expect(displayLabels[1]).toContain("api");
+  expect(displayLabels[2]).toContain("web");
+});
+
+test("duplicate short labels share a column without ambiguity", () => {
+  const entries = [
+    portEntry({ port: 5173, pid: 1, label: "Vite", processName: "node" }),
+    portEntry({ port: 5174, pid: 2, label: "Vite", processName: "node" }),
+  ];
+
+  const { displayLabels, ambiguous } = resolveLabelColumns(entries);
+
+  expect(displayLabels[0]).toBe("Vite");
+  expect(displayLabels[1]).toBe(displayLabels[0]);
+  expect(ambiguous).toEqual([false, false]);
+});
+
+test("identical long labels keep the tool suffix and escalate hints", () => {
+  const label = "rental-property-management-app/wrangler dev";
+  const entries = [
+    portEntry({ port: 55566, pid: 1, label, processName: "node", command: "node wrangler.js worker-a" }),
+    portEntry({ port: 61733, pid: 1, label, processName: "node", command: "node wrangler.js worker-a" }),
+    portEntry({ port: 62293, pid: 2, label, processName: "node", command: "node wrangler.js worker-b" }),
+  ];
+
+  const { displayLabels, ambiguous } = resolveLabelColumns(entries);
+
+  expect(displayLabels[0]).toBe(displayLabels[1]);
+  expect(displayLabels[0]).toMatch(/angler/);
+  expect(displayLabels[0]!.length).toBeLessThanOrEqual(22);
+  expect(ambiguous).toEqual([true, true, true]);
+});
+
+test("short non-colliding labels pass through unchanged", () => {
+  const entries = [
+    portEntry({ port: 3000, pid: 1, label: "Next.js / React", processName: "node" }),
+    portEntry({ port: 5173, pid: 2, label: "Vite", processName: "node" }),
+    portEntry({ port: 8000, pid: 3, label: "Local web server", processName: "node" }),
+  ];
+
+  const { displayLabels, ambiguous } = resolveLabelColumns(entries);
+
+  expect(displayLabels).toEqual(["Next.js / React", "Vite", "Local web server"]);
+  expect(ambiguous).toEqual([false, false, false]);
+});
+
+test("ordinal fallback keeps pathological collisions pairwise distinct", () => {
+  const sharedHead = "AAAAAAAAAAA";
+  const sharedTail = "CCCCCCCCCC";
+  const labels = [
+    `${sharedHead}BBBBBBBBBBB${sharedTail}`,
+    `${sharedHead}XXXXXXXXXXX${sharedTail}`,
+    `${sharedHead}YYYYYYYYYYY${sharedTail}`,
+  ];
+
+  const columns = disambiguate(labels, 22);
+
+  expect(columns).toHaveLength(3);
+  expect(new Set(columns).size).toBe(3);
+  for (const column of columns) {
+    expect(column.length).toBeLessThanOrEqual(22);
+  }
+});
+
+test("formatPortOption without label column matches prior output", () => {
+  const entry = portEntry({
+    port: 7265,
+    pid: 109996,
+    label: "api/server.js",
+    processName: "node",
+    command: "node C:\\dev\\api\\server.js",
+  });
+
+  expect(formatPortOption(entry)).toBe("7265  api/server.js          pid 109996         node");
 });
