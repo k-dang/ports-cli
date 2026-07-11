@@ -142,7 +142,9 @@ export function disambiguate(labels: string[], width: number): string[] {
 }
 
 export function resolveLabelColumns(entries: PortEntry[]): LabelColumns {
-  const displayLabels = entries.map((entry) => truncate(entry.label, LABEL_WIDTH));
+  // Middle-truncate by default so long project prefixes don't hide the tool/script suffix
+  // (e.g. "rental-property-management-app/wrangler dev" → "rental-prop…angler dev").
+  const displayLabels = entries.map((entry) => truncateMiddle(entry.label, LABEL_WIDTH));
   const ambiguous = Array.from({ length: entries.length }, () => false);
   const groups = new Map<string, number[]>();
 
@@ -156,13 +158,21 @@ export function resolveLabelColumns(entries: PortEntry[]): LabelColumns {
   for (const indices of groups.values()) {
     if (indices.length <= 1) continue;
     const labels = indices.map((i) => entries[i]!.label);
-    if (labels.every((label) => label === labels[0])) continue;
+    const distinct = new Set(labels).size > 1;
 
-    const disambiguated = disambiguate(labels, LABEL_WIDTH);
-    for (let j = 0; j < indices.length; j++) {
-      const index = indices[j]!;
-      displayLabels[index] = disambiguated[j]!;
-      ambiguous[index] = true;
+    if (distinct) {
+      const disambiguated = disambiguate(labels, LABEL_WIDTH);
+      for (let j = 0; j < indices.length; j++) {
+        const index = indices[j]!;
+        displayLabels[index] = disambiguated[j]!;
+        ambiguous[index] = true;
+      }
+      continue;
+    }
+
+    // Same label on many ports (one wrangler, many listeners): escalate the focus hint.
+    if (labels[0]!.length > LABEL_WIDTH) {
+      for (const index of indices) ambiguous[index] = true;
     }
   }
 
@@ -333,7 +343,7 @@ export function mergePortEntries(rawEntries: RawPortEntry[]): PortEntry[] {
 
 export function formatPortOption(
   entry: PortEntry,
-  labelColumn: string = truncate(entry.label, LABEL_WIDTH),
+  labelColumn: string = truncateMiddle(entry.label, LABEL_WIDTH),
 ): string {
   const pid = entry.pid ? `pid ${entry.pid}` : "owner unavailable";
   const processName = entry.processName ?? commandName(entry.command) ?? "unknown";
