@@ -120,19 +120,6 @@ function truncateMiddle(text: string, width: number): string {
   return `${text.slice(0, headLen)}${ellipsis}${text.slice(text.length - tailLen)}`;
 }
 
-function longestCommonPrefixLength(labels: string[]): number {
-  if (labels.length === 0) return 0;
-  const first = labels[0]!;
-  let length = 0;
-  outer: for (; length < first.length; length++) {
-    const char = first[length];
-    for (let i = 1; i < labels.length; i++) {
-      if (labels[i]![length] !== char) break outer;
-    }
-  }
-  return length;
-}
-
 function appendOrdinalToDuplicates(columns: string[], width: number): string[] {
   const occurrence = new Map<string, number>();
   return columns.map((column) => {
