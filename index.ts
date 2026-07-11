@@ -101,6 +101,7 @@ function shortenPathArg(arg: string): string {
 }
 
 const LABEL_WIDTH = 22;
+const COMPACT_HINT_WIDTH = 56;
 
 export type LabelColumns = {
   displayLabels: string[];
@@ -350,6 +351,16 @@ export function formatPortOption(
   return `${String(entry.port).padEnd(5)} ${labelColumn.padEnd(LABEL_WIDTH)} ${pid.padEnd(18)} ${processName}`.trimEnd();
 }
 
+/** Focus hint for the multiselect. Prefer a short summary; never dump full argv. */
+export function portOptionHint(entry: PortEntry, ambiguous: boolean): string | undefined {
+  if (entry.disabledReason) return entry.disabledReason;
+
+  const summary = describeCommand(entry.command);
+  if (summary && summary !== entry.label) return summary;
+  if (ambiguous && entry.command) return truncate(entry.command, COMPACT_HINT_WIDTH);
+  return undefined;
+}
+
 function entryKey(entry: { pid?: number; port: number }): string {
   return `${entry.pid ?? "unknown"}:${entry.port}`;
 }
@@ -531,21 +542,12 @@ async function runCli(): Promise<void> {
   const selected = await multiselect<PortEntry>({
     message: "Select ports to close",
     required: false,
-    options: ports.map((entry, i) => {
-      const commandSummary = describeCommand(entry.command);
-      return {
-        value: entry,
-        label: formatPortOption(entry, displayLabels[i]!),
-        hint:
-          entry.disabledReason ??
-          (ambiguous[i] && entry.command
-            ? entry.command
-            : commandSummary && commandSummary !== entry.label
-              ? commandSummary
-              : undefined),
-        disabled: !entry.canClose,
-      };
-    }),
+    options: ports.map((entry, i) => ({
+      value: entry,
+      label: formatPortOption(entry, displayLabels[i]!),
+      hint: portOptionHint(entry, ambiguous[i]!),
+      disabled: !entry.canClose,
+    })),
   });
 
   if (isCancel(selected)) {
