@@ -100,8 +100,86 @@ function shortenPathArg(arg: string): string {
   return segments.length > 1 ? segments.slice(-2).join("/") : (segments.at(-1) ?? arg);
 }
 
+const LABEL_WIDTH = 22;
+
+export type LabelColumns = {
+  displayLabels: string[];
+  ambiguous: boolean[];
+};
+
 function truncate(text: string, maxLength: number): string {
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
+}
+
+function truncateMiddle(text: string, width: number): string {
+  if (text.length <= width) return text;
+  const ellipsis = "…";
+  const budget = width - ellipsis.length;
+  const headLen = Math.ceil(budget / 2);
+  const tailLen = Math.floor(budget / 2);
+  return `${text.slice(0, headLen)}${ellipsis}${text.slice(text.length - tailLen)}`;
+}
+
+function longestCommonPrefixLength(labels: string[]): number {
+  if (labels.length === 0) return 0;
+  const first = labels[0]!;
+  let length = 0;
+  outer: for (; length < first.length; length++) {
+    const char = first[length];
+    for (let i = 1; i < labels.length; i++) {
+      if (labels[i]![length] !== char) break outer;
+    }
+  }
+  return length;
+}
+
+function appendOrdinalToDuplicates(columns: string[], width: number): string[] {
+  const occurrence = new Map<string, number>();
+  return columns.map((column) => {
+    const index = (occurrence.get(column) ?? 0) + 1;
+    occurrence.set(column, index);
+    if (index === 1) return column;
+    const suffix = ` #${index}`;
+    const maxBase = width - suffix.length;
+    const base = column.length <= maxBase ? column : truncate(column, maxBase);
+    return (base + suffix).slice(0, width);
+  });
+}
+
+export function disambiguate(labels: string[], width: number): string[] {
+  let columns = labels.map((label) => truncateMiddle(label, width));
+  if (new Set(columns).size < columns.length) {
+    columns = appendOrdinalToDuplicates(columns, width);
+  }
+  return columns;
+}
+
+export function resolveLabelColumns(entries: PortEntry[]): LabelColumns {
+  const displayLabels = entries.map((entry) => truncate(entry.label, LABEL_WIDTH));
+  const ambiguous = Array.from({ length: entries.length }, () => false);
+  const groups = new Map<string, number[]>();
+
+  for (let i = 0; i < entries.length; i++) {
+    const naive = displayLabels[i]!;
+    const indices = groups.get(naive) ?? [];
+    indices.push(i);
+    groups.set(naive, indices);
+  }
+
+  for (const indices of groups.values()) {
+    if (indices.length <= 1) continue;
+    const labels = indices.map((i) => entries[i]!.label);
+    if (labels.every((label) => label === labels[0])) continue;
+
+    const disambiguated = disambiguate(labels, LABEL_WIDTH);
+    for (let j = 0; j < indices.length; j++) {
+      const index = indices[j]!;
+      displayLabels[index] = disambiguated[j]!;
+      ambiguous[index] = true;
+    }
+  }
+
+  return { displayLabels, ambiguous };
 }
 
 // Matches runtime names with optional version suffixes, e.g. "python3.12", "ruby3.2".
@@ -266,10 +344,13 @@ export function mergePortEntries(rawEntries: RawPortEntry[]): PortEntry[] {
     .sort((a, b) => a.port - b.port || (a.pid ?? 0) - (b.pid ?? 0));
 }
 
-export function formatPortOption(entry: PortEntry): string {
+export function formatPortOption(
+  entry: PortEntry,
+  labelColumn: string = truncate(entry.label, LABEL_WIDTH),
+): string {
   const pid = entry.pid ? `pid ${entry.pid}` : "owner unavailable";
   const processName = entry.processName ?? commandName(entry.command) ?? "unknown";
-  return `${String(entry.port).padEnd(5)} ${truncate(entry.label, 22).padEnd(22)} ${pid.padEnd(18)} ${processName}`.trimEnd();
+  return `${String(entry.port).padEnd(5)} ${labelColumn.padEnd(LABEL_WIDTH)} ${pid.padEnd(18)} ${processName}`.trimEnd();
 }
 
 function entryKey(entry: { pid?: number; port: number }): string {
@@ -426,7 +507,7 @@ function remainingSelectedEntries(before: PortEntry[], after: PortEntry[]): Port
 }
 
 function printDetectedPorts(entries: PortEntry[]): void {
-  log.message(entries.map(formatPortOption).join("\n"), { symbol: "" });
+  log.message(entries.map((entry) => formatPortOption(entry)).join("\n"), { symbol: "" });
 }
 
 async function runCli(): Promise<void> {
@@ -449,15 +530,22 @@ async function runCli(): Promise<void> {
     return;
   }
 
+  const { displayLabels, ambiguous } = resolveLabelColumns(ports);
   const selected = await multiselect<PortEntry>({
     message: "Select ports to close",
     required: false,
-    options: ports.map((entry) => {
+    options: ports.map((entry, i) => {
       const commandSummary = describeCommand(entry.command);
       return {
         value: entry,
-        label: formatPortOption(entry),
-        hint: entry.disabledReason ?? (commandSummary && commandSummary !== entry.label ? commandSummary : undefined),
+        label: formatPortOption(entry, displayLabels[i]!),
+        hint:
+          entry.disabledReason ??
+          (ambiguous[i] && entry.command
+            ? entry.command
+            : commandSummary && commandSummary !== entry.label
+              ? commandSummary
+              : undefined),
         disabled: !entry.canClose,
       };
     }),
@@ -497,7 +585,7 @@ async function runCli(): Promise<void> {
     return;
   }
 
-  log.warn(`Still listening:\n${remaining.map(formatPortOption).join("\n")}`);
+  log.warn(`Still listening:\n${remaining.map((entry) => formatPortOption(entry)).join("\n")}`);
   outro("Some selected ports could not be closed.");
 }
 
