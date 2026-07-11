@@ -269,7 +269,7 @@ test("formatPortOption without label column matches prior output", () => {
   expect(formatPortOption(entry)).toBe("7265  api/server.js          pid 109996         node");
 });
 
-test("portOptionHint prefers disabled reason, then compact command detail", () => {
+test("portOptionHint prefers disabled reason, then summary or full command", () => {
   expect(
     portOptionHint(
       portEntry({ port: 3000, label: "Vite", disabledReason: "owner unavailable", canClose: false }),
@@ -290,19 +290,16 @@ test("portOptionHint prefers disabled reason, then compact command detail", () =
 
   const longCommand =
     '"C:\\Program Files\\nodejs\\node.exe" --no-warnings C:\\Users\\kevin\\Documents\\dev\\rental-property-management-app\\node_modules\\.pnpm\\wrangler@4.107.1\\node_modules\\wrangler\\bin\\wrangler.js dev';
-  const ambiguous = portOptionHint(
-    portEntry({
-      port: 55566,
-      label: "rental-property-management-app/wrangler dev",
-      command: longCommand,
-    }),
-    true,
-  );
-
-  expect(ambiguous).toBeDefined();
-  expect(ambiguous!.length).toBeLessThanOrEqual(56);
-  expect(ambiguous).not.toBe(longCommand);
-  expect(ambiguous!.endsWith("…")).toBe(true);
+  expect(
+    portOptionHint(
+      portEntry({
+        port: 55566,
+        label: "rental-property-management-app/wrangler dev",
+        command: longCommand,
+      }),
+      true,
+    ),
+  ).toBe(longCommand);
 
   expect(
     portOptionHint(

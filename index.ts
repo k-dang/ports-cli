@@ -101,7 +101,6 @@ function shortenPathArg(arg: string): string {
 }
 
 const LABEL_WIDTH = 22;
-const COMPACT_HINT_WIDTH = 56;
 
 export type LabelColumns = {
   displayLabels: string[];
@@ -351,13 +350,13 @@ export function formatPortOption(
   return `${String(entry.port).padEnd(5)} ${labelColumn.padEnd(LABEL_WIDTH)} ${pid.padEnd(18)} ${processName}`.trimEnd();
 }
 
-/** Focus hint for the multiselect. Prefer a short summary; never dump full argv. */
+/** Focus hint for the multiselect. Prefer a short summary; fall back to the full command when ambiguous. */
 export function portOptionHint(entry: PortEntry, ambiguous: boolean): string | undefined {
   if (entry.disabledReason) return entry.disabledReason;
 
   const summary = describeCommand(entry.command);
   if (summary && summary !== entry.label) return summary;
-  if (ambiguous && entry.command) return truncate(entry.command, COMPACT_HINT_WIDTH);
+  if (ambiguous && entry.command) return entry.command;
   return undefined;
 }
 
