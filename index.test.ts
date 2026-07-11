@@ -11,6 +11,7 @@ import {
   parseLsofOutput,
   parsePowerShellJson,
   parseSsOutput,
+  portOptionHint,
   resolveLabelColumns,
   type PortEntry,
 } from "./index";
@@ -266,4 +267,48 @@ test("formatPortOption without label column matches prior output", () => {
   });
 
   expect(formatPortOption(entry)).toBe("7265  api/server.js          pid 109996         node");
+});
+
+test("portOptionHint prefers disabled reason, then summary or full command", () => {
+  expect(
+    portOptionHint(
+      portEntry({ port: 3000, label: "Vite", disabledReason: "owner unavailable", canClose: false }),
+      false,
+    ),
+  ).toBe("owner unavailable");
+
+  expect(
+    portOptionHint(
+      portEntry({
+        port: 3000,
+        label: "Next.js / React",
+        command: "node C:\\dev\\app\\server.js",
+      }),
+      false,
+    ),
+  ).toBe("app/server.js");
+
+  const longCommand =
+    '"C:\\Program Files\\nodejs\\node.exe" --no-warnings C:\\Users\\kevin\\Documents\\dev\\rental-property-management-app\\node_modules\\.pnpm\\wrangler@4.107.1\\node_modules\\wrangler\\bin\\wrangler.js dev';
+  expect(
+    portOptionHint(
+      portEntry({
+        port: 55566,
+        label: "rental-property-management-app/wrangler dev",
+        command: longCommand,
+      }),
+      true,
+    ),
+  ).toBe(longCommand);
+
+  expect(
+    portOptionHint(
+      portEntry({
+        port: 7265,
+        label: "api/server.js",
+        command: "node C:\\dev\\api\\server.js",
+      }),
+      false,
+    ),
+  ).toBeUndefined();
 });
